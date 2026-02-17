@@ -15,7 +15,7 @@ export class RedisCache {
   private lockKey(type: string, args: string[]) {
     return `lock:${type}:${args.join(":")}`;
   }
-  
+
   async set(type: string, args: string[], value: any, options?: CacheOptions) {
     const key = this.cacheKey(type, args);
     const data: any = JSON.stringify(value);
@@ -42,9 +42,12 @@ export class RedisCache {
     options: CacheOptions = { ttl: 60, lockTTL: 10 },
   ): Promise<T> {
     // cache stampede problem
+    // first check if cache present or not 
     const cached = await this.get(type, args);
     if (cached) return cached;
+    // if not present create lock key
     const lockKey = this.lockKey(type, args);
+    // now lock 
     const lock = await this.redis.call(
       "SET",
       lockKey,
@@ -54,10 +57,12 @@ export class RedisCache {
       "NX",
     );
     if (!lock) {
+      // if you have not locked your are not owner 
       await this.sleep(100);
+      // retry the cache
       const retry = await this.get(type, args);
       if (retry) return retry;
-
+      // if found send cache not means set   
       return this.getOrSet(type, args, fetcher, options);
     }
 
