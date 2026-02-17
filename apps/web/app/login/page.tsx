@@ -10,7 +10,7 @@ export default function Login() {
     try {
       await signIn.social({
         provider: "google",
-        callbackURL:`${process.env.NEXT_PUBLIC_BETTER_AUTH_URL}/dashboard`,
+        callbackURL:`/dashboard`,
       });
     } catch (error) {
       console.log("error in google signin", error);
@@ -24,7 +24,7 @@ export default function Login() {
     try {
       await signIn.social({
         provider: "github",
-        callbackURL:`${process.env.NEXT_PUBLIC_BETTER_AUTH_URL}/dashboard`,
+        callbackURL:`/dashboard`,
       });
     } catch (error) {
       console.log("error in github", error);

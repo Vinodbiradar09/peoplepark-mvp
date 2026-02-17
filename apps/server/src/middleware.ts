@@ -1,24 +1,25 @@
+import 'dotenv/config';
 import { auth } from "@repo/auth";
-import dotenv from "dotenv";
+import { fromNodeHeaders } from "better-auth/node";
 import { NextFunction, Request, Response } from "express";
-dotenv.config();
+
 
 export async function AuthHandler(req : Request , res : Response , next : NextFunction) {
     try {
-        const header = req.headers.authorization;
-        if(!header || !header.startsWith("Bearer ")){
-            return res.status(401).json({
-                error : "No token provided",
-                success : false,
-            })
-        }
-        const token = header.split(" ")[1];
-        console.log("token" , token);
+        // const header = req.headers.authorization;
+        // if(!header || !header.startsWith("Bearer ")){
+        //     return res.status(401).json({
+        //         error : "No token provided",
+        //         success : false,
+        //     })
+        // }
+        // const token = header.split(" ")[1];
+        // console.log("token" , token);
+        console.log("process" , process.env.DATABASE_URL);
         const session = await auth.api.getSession({
-            headers : {
-                authorization : `Bearer ${token}`,
-            }
+            headers : fromNodeHeaders(req.headers)
         })
+        console.log("ses" , session);
         if(!session || !session.user || !session.session){
             return res.status(401).json({
                 error : "Invalid session , Authentication Required",

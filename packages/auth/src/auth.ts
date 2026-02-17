@@ -1,6 +1,8 @@
 import { prisma } from "@repo/db";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from 'better-auth/adapters/prisma'
+import { bearer } from "better-auth/plugins";
+import 'dotenv/config';
 
 export const auth = betterAuth({
     baseURL : process.env.BETTER_AUTH_URL,
@@ -20,7 +22,10 @@ export const auth = betterAuth({
         clientId: process.env.GITHUB_CLIENT_ID!,
         clientSecret: process.env.GITHUB_CLIENT_SECRET!,
     }
-   }
+   },
+//    plugins : [
+//     bearer(),
+//    ]
 })
 
 export type Session = typeof auth.$Infer.Session.session;

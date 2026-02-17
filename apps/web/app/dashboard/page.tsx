@@ -11,17 +11,22 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
 
   useEffect(() => {
-    if (!isPending || !session) {
+    if (!isPending && !session) {
+        console.log("session" , isPending , session);
       router.push("/login");
     }
   }, [session, isPending, router]);
 
   const Data = async () => {
     if (!session) return;
+    console.log("debug");
+    console.log("debug session" , session);
     try {
       const response = await fetch("http://localhost:4000/api/protected", {
+        method : "GET",
+        credentials : "include",
         headers: {
-          Authorization: `Bearer ${session.session.token}`,
+          "Content-Type": "application/json",
         },
       });
 
@@ -41,6 +46,9 @@ export default function Dashboard() {
   }
 
   if (!session) {
+    <div>
+        Session not found
+    </div>
     return null;
   }
 
