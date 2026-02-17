@@ -6,16 +6,14 @@
 
 generator client {
   provider = "prisma-client-js"
-  // output   = "../generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
 }
 
-
 model User {
-  id            String    @id
+  id            String       @id
   name          String
   email         String
   emailVerified Boolean
@@ -24,6 +22,8 @@ model User {
   updatedAt     DateTime
   sessions      Session[]
   accounts      Account[]
+  memberships   RoomMember[]
+  messages      Messages[]
 
   @@unique([email])
   @@map("user")
@@ -72,4 +72,58 @@ model Verification {
   updatedAt  DateTime?
 
   @@map("verification")
+}
+
+model Room {
+  id        String       @id @default(uuid())
+  name      String
+  img       String?
+  members   RoomMember[]
+  messages  Messages[]
+  isDeleted Boolean      @default(false)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+}
+
+model RoomMember {
+  id       String   @id @default(uuid())
+  userId   String
+  roomId   String
+  role     RoomRole @default(MEMBER)
+  joinedAt DateTime @default(now())
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room     Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roomId])
+  @@index([roomId])
+  @@index([userId])
+  @@map("room_members")
+}
+
+model Messages {
+  id        String      @id @default(uuid())
+  content   String
+  type      MessageType @default(TEXT)
+  roomId    String
+  senderId  String
+  isDeleted Boolean     @default(false)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  room      Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender    User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+enum RoomRole {
+  MEMBER
+  ADMIN
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  SYSTEM
 }

@@ -22,7 +22,7 @@ export default function Dashboard() {
     console.log("debug");
     console.log("debug session" , session);
     try {
-      const response = await fetch("http://localhost:4000/api/protected", {
+      const response = await fetch("http://localhost:4000/api/v1/rooms/u", {
         method : "GET",
         credentials : "include",
         headers: {
