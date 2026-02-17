@@ -1,34 +1,79 @@
 import { getRedisClient } from "./client";
 
 export interface CacheOptions {
-    ttl? : number
+  ttl?: number;
+  lockTTL?: number;
 }
 
 export class RedisCache {
-    constructor(private readonly redis = getRedisClient()){}
+  constructor(private readonly redis = getRedisClient()) {}
 
-    private key( type : string , args : string[]){
-        return `${type}:${args.join(":")}`;
+  private cacheKey(type: string, args: string[]) {
+    return `cache:${type}:${args.join(":")}`;
+  }
+
+  private lockKey(type: string, args: string[]) {
+    return `lock:${type}:${args.join(":")}`;
+  }
+  
+  async set(type: string, args: string[], value: any, options?: CacheOptions) {
+    const key = this.cacheKey(type, args);
+    const data: any = JSON.stringify(value);
+    if (options?.ttl) {
+      await this.redis.set(key, data, "EX", options.ttl);
+    } else {
+      await this.redis.set(key, data);
+    }
+  }
+
+  async get(type: string, args: string[]) {
+    const value = await this.redis.get(this.cacheKey(type, args));
+    return value ? JSON.parse(value) : null;
+  }
+
+  async del(type: string, args: string[]) {
+    await this.redis.del(this.cacheKey(type, args));
+  }
+
+  async getOrSet<T>(
+    type: string,
+    args: string[],
+    fetcher: () => Promise<T>,
+    options: CacheOptions = { ttl: 60, lockTTL: 10 },
+  ): Promise<T> {
+    // cache stampede problem
+    const cached = await this.get(type, args);
+    if (cached) return cached;
+    const lockKey = this.lockKey(type, args);
+    const lock = await this.redis.call(
+      "SET",
+      lockKey,
+      "1",
+      "PX",
+      options.lockTTL ?? 5000,
+      "NX",
+    );
+    if (!lock) {
+      await this.sleep(100);
+      const retry = await this.get(type, args);
+      if (retry) return retry;
+
+      return this.getOrSet(type, args, fetcher, options);
     }
 
-    async set( type : string , args : string[] , value : any , options?: CacheOptions){
-        const key = this.key(type , args);
-        const data : any = JSON.stringify(value);
-        if(options?.ttl){
-            await this.redis.set(key , data , "EX" , options.ttl)
-        } else {
-            await this.redis.set(key , data);
-        }
+    try {
+      const data = await fetcher();
+      await this.set(type, args, data, { ttl: options.ttl });
+      return data;
+    } catch (error) {
+      console.log("error cache stampede", error);
+      throw error;
+    } finally {
+      await this.redis.del(lockKey);
     }
+  }
 
-    async get(type : string , args : string[]){
-        const key = this.key(type , args);
-        const value = await this.redis.get(key);
-        return value ? JSON.parse(value) : null;
-    }
-
-    async del (type : string , args : string[]){
-        await this.redis.del(this.key(type , args));
-    }
+  sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 }
-
