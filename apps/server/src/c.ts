@@ -1,8 +1,7 @@
 import { prisma } from "@repo/db";
 import { Request, Response } from "express";
-import { RedisCache } from "@repo/redis";
-
-const cache = new RedisCache();
+import { cache } from "./index";
+import { roomSchema } from "@repo/zod"; 
 
 const Rooms = {
   async getRooms(req: Request, res: Response) {
@@ -36,6 +35,51 @@ const Rooms = {
         error: "internal server error",
         success: false,
       });
+    }
+  },
+
+  async createRoom( req : Request , res : Response){
+    try {
+      if(!req.user || !req.user.id ){
+        return res.status(401).json({
+          error : "Unauthorized User",
+          success : false,
+        })
+      }
+      const { success , data } = roomSchema.safeParse(req.body);
+      if(!success){
+        return res.status(403).json({
+          error : "room details required",
+          success : false,
+        })
+      }
+      await prisma.$transaction(async( tx )=>{
+        const room = await tx.room.create({
+          data : {
+            name : data.name,
+          }
+        })
+
+        await tx.roomMember.create({
+          data : {
+            userId : req.user.id,
+            roomId : room.id,
+            role : "ADMIN",
+          }
+        })
+      })
+
+      return res.status(200).json({
+        message : "Room created",
+        success : true,
+      })
+
+    } catch (error) {
+      console.log("error" , error);
+      return res.status(500).json({
+        error : "internal server error",
+        success : false,
+      })
     }
   },
 

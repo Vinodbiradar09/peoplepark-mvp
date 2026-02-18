@@ -5,4 +5,6 @@ const roomRouter = Router();
 
 roomRouter.get("/", AuthHandler, Rooms.getRooms);
 roomRouter.get("/u", AuthHandler, Rooms.getUser);
+roomRouter.post("/" , AuthHandler , Rooms.createRoom);
+
 export { roomRouter };
