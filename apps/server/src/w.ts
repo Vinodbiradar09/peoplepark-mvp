@@ -13,133 +13,138 @@ interface AuthenticatedWebSocket extends WebSocket {
   socketId: string;
 }
 
-export class RoomConnectioManager {
+export class RoomManager {
   private wss: WebSocketServer;
+  // in memory rooms key :- roomId value :- sockets
+  private rooms = new Map<string, Set<AuthenticatedWebSocket>>();
+  // in memory rooms id , value :- unique roomIds to maintain the pub subs ( subscribe and unsubscribe)
+  private subscribedRooms = new Set<string>();
 
   constructor(private readonly server: http.Server) {
+    console.log("hey reaching");
     this.wss = new WebSocketServer({ noServer: true });
     this.setupUpgradeHandler();
-    this.connectionInitialize();
+    this.initializeConnections();
   }
 
-  private rooms = new Map<string, Set<WebSocket>>();
-  private roomCounts = new Map<string, number>();
-
+  // middleware for the authentication , get the session and attach to sockets
   private setupUpgradeHandler() {
     this.server.on("upgrade", async (req: IncomingMessage, socket, head) => {
       const { pathname } = new URL(req.url || "", `http://${req.headers.host}`);
-      if (pathname === "/room") {
-        try {
-          const session = await auth.api.getSession({
-            headers: fromNodeHeaders(req.headers),
-          });
-          if (!session || !session.user) {
-            socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-            socket.destroy();
-            return;
-          }
-          this.wss.handleUpgrade(req, socket, head, (ws) => {
-            const authenticatedWs = ws as AuthenticatedWebSocket;
-            authenticatedWs.user = session.user;
-            authenticatedWs.socketId = uuidv4();
-            this.wss.emit("connection", authenticatedWs, req);
-          });
-        } catch (error) {
-          console.error("WS Auth Error:", error);
-          socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+      if (pathname !== "/room") return;
+      try {
+        const session = await auth.api.getSession({
+          headers: fromNodeHeaders(req.headers),
+        });
+        if (!session || !session.user) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
           socket.destroy();
+          return;
         }
+
+        this.wss.handleUpgrade(req, socket, head, (ws) => {
+          const aws = ws as AuthenticatedWebSocket;
+          aws.user = session.user;
+          aws.socketId = uuidv4();
+          this.wss.emit("connection", aws, req);
+        });
+      } catch (error) {
+        console.error("WS upgrade error", error);
+        socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+        socket.destroy();
       }
     });
   }
 
-  private connectionInitialize() {
-    this.wss.on(
-      "connection",
-      (ws: AuthenticatedWebSocket, req: IncomingMessage) => {
-        console.log("connection made", ws.user.email);
-        ws.on("message", (raw) => this.onMessages(ws, raw));
-        ws.on("close", () => this.onClose(ws));
-      },
-    );
+  // on socket connection
+  private initializeConnections() {
+    console.log("hehhe");
+    this.wss.on("connection", async(ws: AuthenticatedWebSocket) => {
+      console.log(
+        `ws connected | user=${ws.user.email} | server=${process.env.PORT}`,
+      );
+      // handle message of client
+      ws.on("message", (raw) => this.onMessages(ws, raw));
+      // close the connection
+      ws.on("close", () => this.onClose(ws));
+    });
   }
 
-  private async onMessages(ws: AuthenticatedWebSocket, raw: WebSocket.RawData) {
+  private onMessages(ws: AuthenticatedWebSocket, raw: WebSocket.RawData) {
     const { event, data } = JSON.parse(raw.toString());
     switch (event) {
       case "JOIN":
-        await this.joinRooms(ws, data);
+        this.joinWsRooms(ws, data);
         break;
-
       case "LEAVE":
-        await this.endRooms(ws, data);
+        this.leaveWsRooms(ws, data);
         break;
-
-      case "BROADCAST": 
-        await this.SendMessages(ws , data);  
+      case "BROADCAST":
+        this.sendMessagesToWsRooms(ws, data);
+        break;
     }
   }
 
-  private async joinRooms(ws: AuthenticatedWebSocket, data: any) {
-    // check the user is in room or not
+  private async joinWsRooms(ws: AuthenticatedWebSocket, data: any) {
+    // verify user belongs to room
+    const { roomId } = data;
     const isMember = await prisma.roomMember.findUnique({
       where: {
         userId_roomId: {
+          roomId,
           userId: ws.user.id,
-          roomId: data.roomId,
         },
       },
     });
     if (!isMember) {
-      this.sendMessageToClient(ws, {
-        message: "not a room member",
-        success: false,
-      });
+      this.safeSend(ws, { success: false, message: "Not a room member" });
       return;
     }
 
-    if (!this.rooms.has(data.roomId)) {
-      this.rooms.set(data.roomId, new Set());
+    if (!this.rooms.has(roomId)) {
+      this.rooms.set(roomId, new Set());
     }
-    this.rooms.get(data.roomId)!.add(ws);
+    this.rooms.get(roomId)!.add(ws);
 
-    const count = this.roomCounts.get(data.roomId) ?? 0;
-    if (count === 0) {
-      await pubsub.subscribe(`room:${data.roomId}:pubsub`, (message) => {
-        const sockets = this.rooms.get(data.roomId);
+    if (!this.subscribedRooms.has(roomId)) {
+      console.log(
+        `SERVER ${process.env.PORT} subscribing to room:${roomId}:pubsub`,
+      );
+      // fanout and subscribe to messages for this roomId 
+      // if any message persists fanout and send to local room's sockets 
+      await pubsub.subscribe(`room:${roomId}:pubsub`, (message) => {
+        const sockets = this.rooms.get(roomId);
         if (!sockets) return;
         for (const client of sockets) {
-          if (client.readyState === client.OPEN) {
+          if (client.readyState === WebSocket.OPEN) {
             client.send(JSON.stringify(message));
           }
         }
       });
+      this.subscribedRooms.add(roomId);
     }
-
-    this.roomCounts.set(data.roomId, count + 1);
-    this.sendMessageToClient(ws, {
-      message: "you joined room",
-      success: true,
-    });
   }
 
-  private async endRooms(ws: AuthenticatedWebSocket, data: any) {
-    const room = this.rooms.get(data.roomId);
+  private async leaveWsRooms(ws: AuthenticatedWebSocket, data: any) {
+    const { roomId } = data;
+    const room = this.rooms.get(roomId);
     if (!room) return;
-
     room.delete(ws);
-    const count = (this.roomCounts.get(data.roomId) ?? 1) - 1;
-    if (count === 0) {
-      this.roomCounts.delete(data.roomId);
-      this.rooms.delete(data.roomId);
-      await pubsub.unsubscribe(`room:${data.roomId}:pubsub`);
-    } else {
-      this.roomCounts.set(data.roomId, count);
+    // if this server has zero sockets for this room - unsubscribe the room
+    if (room.size === 0) {
+      console.log(
+        `server ${process.env.PORT} unsubscribing from room:${roomId}:pubsub`,
+      );
+
+      this.rooms.delete(roomId);
+      this.subscribedRooms.delete(roomId);
+      await pubsub.unsubscribe(`room:${roomId}:pubsub`);
     }
   }
 
-  private async SendMessages(ws: AuthenticatedWebSocket, data: any) {
+  private async sendMessagesToWsRooms(ws: AuthenticatedWebSocket, data: any) {
     const { roomId, content } = data;
+    // before sending message , validate the user belongs to room or not 
     const isMember = await prisma.roomMember.findUnique({
       where: {
         userId_roomId: {
@@ -149,22 +154,37 @@ export class RoomConnectioManager {
       },
     });
     if (!isMember) {
-      this.sendMessageToClient(ws, {
-        success: false,
-        message: "not a room member",
-      });
+      this.safeSend(ws, { success: false, message: "Not a room member" });
       return;
     }
+    // just publish to pub subs each subscribed server receives the messages 
     await pubsub.publish(`room:${roomId}:pubsub`, {
-        event : "MESSAGE",
-        playload : content
+      event: "MESSAGE",
+      roomId,
+      senderId: ws.user.id,
+      content,
+      timestamp: Date.now(),
     });
   }
-  private async sendMessageToClient(ws: AuthenticatedWebSocket, data: any) {
-    if (ws.readyState === 1) {
-      ws.send(JSON.stringify(data));
+
+  // on close connection remove the socket , check for the last if there is zero sockets then unsubscribe to this roomId 
+  private onClose(ws: AuthenticatedWebSocket) {
+    for (const [roomId, sockets] of this.rooms.entries()) {
+      if (sockets.has(ws)) {
+        sockets.delete(ws);
+
+        if (sockets.size === 0) {
+          this.rooms.delete(roomId);
+          this.subscribedRooms.delete(roomId);
+          pubsub.unsubscribe(`room:${roomId}:pubsub`);
+        }
+      }
     }
   }
 
-  private async onClose(ws: AuthenticatedWebSocket) {}
+  private safeSend(ws: AuthenticatedWebSocket, payload: any) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(payload));
+    }
+  }
 }

@@ -503,7 +503,7 @@ const Rooms = {
             role: true,
           },
         });
-        if(existOfMemberAndAdmin.length < 2){
+        if (existOfMemberAndAdmin.length < 2) {
           throw new Error("room or members not found");
         }
         const isAdmin = existOfMemberAndAdmin.find(

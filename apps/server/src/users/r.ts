@@ -7,4 +7,3 @@ const userRouter = Router();
 userRouter.get("/", AuthHandler, Users.getUser);
 
 export { userRouter };
-
