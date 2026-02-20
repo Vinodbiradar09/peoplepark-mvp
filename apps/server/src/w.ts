@@ -117,6 +117,7 @@ export class RoomManager {
         if (!sockets) return;
         for (const client of sockets) {
           if (client.readyState === WebSocket.OPEN) {
+            if(client.user.id === message.senderId) continue;
             client.send(JSON.stringify(message));
           }
         }
