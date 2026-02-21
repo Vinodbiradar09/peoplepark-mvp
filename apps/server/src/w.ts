@@ -7,6 +7,7 @@ import { cache } from "./infra";
 import { v4 as uuidv4 } from "uuid";
 import { prisma } from "@repo/db";
 import { pubsub } from "./infra";
+import { messageProduce } from "@repo/kafka";
 
 interface AuthenticatedWebSocket extends WebSocket {
   user: User;
@@ -161,6 +162,9 @@ export class RoomManager {
       content,
       timestamp: Date.now(),
     });
+    // push the message to kafka 
+    const msgData = { roomId , senderId : ws.user.id , content , timestamp : Date.now()}
+    messageProduce(msgData);
   }
 
   // on close connection remove the socket , check for the last if there is zero sockets then unsubscribe to this roomId
