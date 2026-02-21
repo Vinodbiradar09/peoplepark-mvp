@@ -1,33 +1,22 @@
 import "dotenv/config";
-import cors from "cors";
 import http from "http";
-import express from "express";
-import { roomRouter } from "./rooms/r";
-import { RedisCache, RedisPubSub } from "@repo/redis";
-const app = express();
-const server = http.createServer(app);
-export const cache = new RedisCache();
-export const pubsub = new RedisPubSub();
+
+import { createHttpApp } from "./http";
+import { Infra } from "./infra";
+import { Admin } from "@repo/kafka";
 import { RoomManager } from "./w";
-import { userRouter } from "./users/r";
+import { fatal } from "./fatal";
 
-app.use(
-  cors({
-    origin: process.env.WEB_URL,
-    credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
-  }),
-);
+async function bootstrap() {
+  Infra();
+  await Admin();
+  const app = createHttpApp();
+  const server = http.createServer(app);
+  new RoomManager(server);
+  const PORT = process.env.PORT;
+  server.listen(PORT);
+}
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use("/api/v1/rooms", roomRouter);
-app.use("/api/v1/users", userRouter);
+bootstrap().catch(fatal);
 
-console.log("hi");
-new RoomManager(server);
-console.log("hie");
-const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => {
-  console.log(`server is running at http://localhost:${PORT}`);
-});
+

@@ -1,6 +1,15 @@
 import { Request, Response } from "express";
-import { cache } from "../index";
+import { cache } from "../infra";
 import { prisma } from "@repo/db";
+import { uniqueNamesGenerator, starWars, names } from "unique-names-generator";
+
+const uniqueName = () => {
+  return uniqueNamesGenerator({
+    dictionaries: [names, starWars],
+    separator: "-",
+    style: "capital",
+  });
+};
 
 const Users = {
   async getUser(req: Request, res: Response) {
@@ -35,6 +44,47 @@ const Users = {
       });
     }
   },
+
+  async assignUniqueName(req: Request, res: Response) {
+    try {
+      // the user should be exists and email verified
+      // the name is assigned based on the email and other stuff
+      const user = await cache.getOrSet(
+        "user",
+        [req.user.id],
+        async () => {
+          return await prisma.user.findUnique({
+            where: {
+              id: req.user.id,
+            },
+          });
+        },
+        { ttl: 300, lockTTL: 10 },
+      );
+      const newName = await prisma.user.update({
+        where: {
+          id: user?.id,
+        },
+        data: {
+          name: uniqueName(),
+        },
+      });
+      // after generating the name cache delete
+      await cache.del("user", [req.user.id]);
+      return res.status(200).json({
+        message: "your name has been generated",
+        success: true,
+        user: newName,
+      });
+    } catch (error) {
+      console.log("error", error);
+      return res.status(200).json({
+        message: "internal server error",
+        success: false,
+      });
+    }
+  },
+  
 };
 
 export { Users };

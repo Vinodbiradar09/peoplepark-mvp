@@ -9,10 +9,11 @@ export default function Dashboard() {
   const router = useRouter();
 
   const [data, setData] = useState(null);
+  const [newName, setNewName] = useState(null);
 
   useEffect(() => {
     if (!isPending && !session) {
-        console.log("session" , isPending , session);
+      console.log("session", isPending, session);
       router.push("/login");
     }
   }, [session, isPending, router]);
@@ -20,11 +21,11 @@ export default function Dashboard() {
   const Data = async () => {
     if (!session) return;
     console.log("debug");
-    console.log("debug session" , session);
+    console.log("debug session", session);
     try {
       const response = await fetch("http://localhost:4000/api/v1/users", {
-        method : "GET",
-        credentials : "include",
+        method: "GET",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
         },
@@ -37,6 +38,23 @@ export default function Dashboard() {
     }
   };
 
+  const uniqueName = async () => {
+    if (!session?.user || !session) return;
+    try {
+      const response = await fetch("http://localhost:4000/api/v1/users/name", {
+        method: "PATCH",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+      const res = await response.json();
+      setNewName(res);
+    } catch (error) {
+      console.log("error", error);
+    }
+  };
+
   if (isPending) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -46,13 +64,11 @@ export default function Dashboard() {
   }
 
   if (!session) {
-    <div>
-        Session not found
-    </div>
+    <div>Session not found</div>;
     return null;
   }
 
-    return (
+  return (
     <div className="min-h-screen p-8">
       <div className="mx-auto max-w-4xl">
         <div className="flex items-center justify-between">
@@ -64,9 +80,11 @@ export default function Dashboard() {
             Sign Out
           </button>
         </div>
-        
+
         <div className="mt-8 rounded-lg bg-white p-6 shadow">
-          <h2 className="text-xl font-semibold">Welcome, {session.user.name}!</h2>
+          <h2 className="text-xl font-semibold">
+            Welcome, {session.user.name}!
+          </h2>
           <p className="mt-2 text-gray-600">{session.user.email}</p>
         </div>
 
@@ -77,10 +95,21 @@ export default function Dashboard() {
           >
             Test API Call
           </button>
-          
+
           {data && (
             <div className="mt-4 rounded-lg bg-gray-100 p-4">
               <pre className="text-sm">{JSON.stringify(data, null, 2)}</pre>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <button onClick={uniqueName} className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">
+            generate name
+          </button>
+          {newName && (
+            <div>
+              <pre>{JSON.stringify(newName , null , 2)}</pre>
             </div>
           )}
         </div>

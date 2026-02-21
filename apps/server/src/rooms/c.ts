@@ -1,6 +1,6 @@
 import { prisma } from "@repo/db";
 import { Request, Response } from "express";
-import { cache } from "../index";
+import { cache } from "../infra";
 import {
   createRoomSchema,
   degradeAdminSchema,
@@ -9,6 +9,7 @@ import {
   leaveRoomSchema,
   makeAdminSchema,
   removeMemberSchema,
+  removeMembersSchema,
 } from "@repo/zod";
 
 const Rooms = {
@@ -71,6 +72,7 @@ const Rooms = {
         const room = await tx.room.create({
           data: {
             name: data.name,
+            expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
           },
         });
 
@@ -476,74 +478,51 @@ const Rooms = {
     }
   },
 
-  async removeMemberFromRoom(req: Request, res: Response) {
+  async removeMembersFromRoom(req: Request, res: Response) {
     try {
-      // the remover must be admin , the user should be present in room and he must not be the admin
       if (!req.user || !req.user.id) {
         return res.status(401).json({
-          message: "Unauthorized User",
+          message: "Unauthorized user",
           success: false,
         });
       }
-      const { success, data } = removeMemberSchema.safeParse(req.params);
+      const { roomId } = req.params;
+      const body = req.body;
+      const { success, data } = removeMembersSchema.safeParse(body);
       if (!success) {
         return res.status(400).json({
-          message: "roomId and userid required",
+          message: "user ids are required",
           success: false,
         });
       }
-      const removedMember = await prisma.$transaction(async (tx) => {
-        const existOfMemberAndAdmin = await tx.roomMember.findMany({
+      if (!roomId || Array.isArray(roomId)) {
+        return res.status(400).json({
+          message: "room id required",
+          success: false,
+        });
+      }
+
+      const memberIds = new Set(data.userIds);
+      const memIds = [...memberIds];
+      await prisma.$transaction(async (tx) => {
+        // the remover must be admin of the room
+        const isAdmin = await tx.roomMember.findFirst({
           where: {
-            userId: { in: [req.user.id, data.userId] },
-            roomId: data.roomId,
-          },
-          select: {
-            userId: true,
-            role: true,
+            roomId,
+            userId: req.user.id,
+            role: "ADMIN",
           },
         });
-        if (existOfMemberAndAdmin.length < 2) {
-          throw new Error("room or members not found");
-        }
-        const isAdmin = existOfMemberAndAdmin.find(
-          (adm) => adm.userId === req.user.id,
-        );
-        const isMember = existOfMemberAndAdmin.find(
-          (mem) => mem.userId === data.userId,
-        );
-
-        if (!isAdmin || isAdmin.role !== "ADMIN") {
-          throw new Error("you are not admin of the room");
+        if (!isAdmin) {
+          throw new Error("you are not admin for the room");
         }
 
-        if (!isMember) {
-          throw new Error("the user is not present in room");
-        }
-
-        if (isMember.role !== "MEMBER") {
-          throw new Error(
-            "the user you are requesting is not a member of room he is admin of the room",
-          );
-        }
-        return await tx.roomMember.delete({
+        return await tx.roomMember.deleteMany({
           where: {
-            userId_roomId: {
-              userId: data.userId,
-              roomId: data.roomId,
-            },
-          },
-          select: {
-            user: { select: { name: true } },
-            room: { select: { name: true } },
+            roomId,
+            userId: { in: memIds },
           },
         });
-      });
-
-      return res.status(200).json({
-        message: `${removedMember.user.name} has been removed from the ${removedMember.room.name}`,
-        success: true,
-        removedMember,
       });
     } catch (error) {
       console.log("error", error);

@@ -31,4 +31,16 @@ const removeMemberSchema = z.object({
     roomId : z.string(),
     userId : z.string(),
 })
-export { createRoomSchema , joinRoomSchema , leaveRoomSchema , makeAdminSchema , deleteRoomSchema , degradeAdminSchema , removeMemberSchema };
+
+const removeMembersSchema = z.object({
+    userIds : z.array(z.string()),
+})
+
+const deleteMessagesSchema = z.object({
+    messageIds : z.array(z.string()),
+})
+
+const editMessageSchema = z.object({
+    content : z.string(),
+})
+export { createRoomSchema , joinRoomSchema , leaveRoomSchema , makeAdminSchema , deleteRoomSchema , degradeAdminSchema , removeMemberSchema , deleteMessagesSchema , editMessageSchema , removeMembersSchema};

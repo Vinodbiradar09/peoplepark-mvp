@@ -19,9 +19,9 @@ roomRouter.patch(
   Rooms.degradeAdminToMember,
 );
 roomRouter.delete(
-  "/:roomId/members/:userId",
+  "/:roomId/members",
   AuthHandler,
-  Rooms.removeMemberFromRoom,
+  Rooms.removeMembersFromRoom,
 );
 
 export { roomRouter };

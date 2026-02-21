@@ -3,10 +3,10 @@ import { IncomingMessage } from "http";
 import http from "http";
 import { auth, User } from "@repo/auth";
 import { fromNodeHeaders } from "better-auth/node";
-import { cache } from "./index";
+import { cache } from "./infra";
 import { v4 as uuidv4 } from "uuid";
 import { prisma } from "@repo/db";
-import { pubsub } from "./index";
+import { pubsub } from "./infra";
 
 interface AuthenticatedWebSocket extends WebSocket {
   user: User;
@@ -59,7 +59,7 @@ export class RoomManager {
   // on socket connection
   private initializeConnections() {
     console.log("hehhe");
-    this.wss.on("connection", async(ws: AuthenticatedWebSocket) => {
+    this.wss.on("connection", async (ws: AuthenticatedWebSocket) => {
       console.log(
         `ws connected | user=${ws.user.email} | server=${process.env.PORT}`,
       );
@@ -110,14 +110,14 @@ export class RoomManager {
       console.log(
         `SERVER ${process.env.PORT} subscribing to room:${roomId}:pubsub`,
       );
-      // fanout and subscribe to messages for this roomId 
-      // if any message persists fanout and send to local room's sockets 
+      // fanout and subscribe to messages for this roomId
+      // if any message persists fanout and send to local room's sockets
       await pubsub.subscribe(`room:${roomId}:pubsub`, (message) => {
         const sockets = this.rooms.get(roomId);
         if (!sockets) return;
         for (const client of sockets) {
           if (client.readyState === WebSocket.OPEN) {
-            if(client.user.id === message.senderId) continue;
+            if (client.user.id === message.senderId) continue;
             client.send(JSON.stringify(message));
           }
         }
@@ -145,20 +145,15 @@ export class RoomManager {
 
   private async sendMessagesToWsRooms(ws: AuthenticatedWebSocket, data: any) {
     const { roomId, content } = data;
-    // before sending message , validate the user belongs to room or not 
-    const isMember = await prisma.roomMember.findUnique({
-      where: {
-        userId_roomId: {
-          userId: ws.user.id,
-          roomId,
-        },
-      },
-    });
-    if (!isMember) {
-      this.safeSend(ws, { success: false, message: "Not a room member" });
+    // before sending message , validate the user belongs to room or not
+    // get the sockets from the roomId
+    const room = this.rooms.get(roomId);
+    // validate the whether present or not 
+    if (!room || !room.has(ws)) {
+      this.safeSend(ws, { success: false, message: "you are not in room" });
       return;
     }
-    // just publish to pub subs each subscribed server receives the messages 
+    // just publish to pub subs each subscribed server receives the messages
     await pubsub.publish(`room:${roomId}:pubsub`, {
       event: "MESSAGE",
       roomId,
@@ -168,7 +163,7 @@ export class RoomManager {
     });
   }
 
-  // on close connection remove the socket , check for the last if there is zero sockets then unsubscribe to this roomId 
+  // on close connection remove the socket , check for the last if there is zero sockets then unsubscribe to this roomId
   private onClose(ws: AuthenticatedWebSocket) {
     for (const [roomId, sockets] of this.rooms.entries()) {
       if (sockets.has(ws)) {
