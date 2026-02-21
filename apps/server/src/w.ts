@@ -7,7 +7,7 @@ import { cache } from "./infra";
 import { v4 as uuidv4 } from "uuid";
 import { prisma } from "@repo/db";
 import { pubsub } from "./infra";
-import { messageProduce } from "@repo/kafka";
+import { sendBatchMessages } from "@repo/kafka";
 
 interface AuthenticatedWebSocket extends WebSocket {
   user: User;
@@ -154,17 +154,19 @@ export class RoomManager {
       this.safeSend(ws, { success: false, message: "you are not in room" });
       return;
     }
+    // one timestamp 
+    const now = new Date();
     // just publish to pub subs each subscribed server receives the messages
     await pubsub.publish(`room:${roomId}:pubsub`, {
       event: "MESSAGE",
       roomId,
       senderId: ws.user.id,
       content,
-      timestamp: Date.now(),
+      createdAt : now.getTime()
     });
     // push the message to kafka 
-    const msgData = { roomId , senderId : ws.user.id , content , timestamp : Date.now()}
-    messageProduce(msgData);
+    // messageProduce(msgData);
+    sendBatchMessages([{ roomId , senderId : ws.user.id , content , createdAt : now.toISOString() }]).catch(( err)=> console.log("error in pushing messages to kafka" , err))
   }
 
   // on close connection remove the socket , check for the last if there is zero sockets then unsubscribe to this roomId

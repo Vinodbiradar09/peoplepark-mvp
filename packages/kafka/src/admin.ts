@@ -20,6 +20,7 @@ export async function Admin() {
 
   try {
     const existingTopics = await admin.listTopics();
+    console.log("existing " , existingTopics);
     const topics = requiredTopics.filter(
       (t) => !existingTopics.includes(t.topic),
     );
