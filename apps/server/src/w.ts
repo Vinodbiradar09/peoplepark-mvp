@@ -3,10 +3,9 @@ import { IncomingMessage } from "http";
 import http from "http";
 import { auth, User } from "@repo/auth";
 import { fromNodeHeaders } from "better-auth/node";
-import { cache } from "./infra";
 import { v4 as uuidv4 } from "uuid";
 import { prisma } from "@repo/db";
-import { pubsub } from "./infra";
+import { pubsub } from "@repo/redis";
 import { sendBatchMessages } from "@repo/kafka";
 
 interface AuthenticatedWebSocket extends WebSocket {

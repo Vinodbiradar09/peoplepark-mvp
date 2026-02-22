@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { cache } from "../infra";
+import { cache } from "@repo/redis";
 import { deleteMessagesSchema, editMessageSchema } from "@repo/zod";
 import { prisma } from "@repo/db";
 
@@ -23,27 +23,27 @@ const Messages = {
           success: false,
         });
       }
-      if(!roomId || Array.isArray(roomId)){
+      if (!roomId || Array.isArray(roomId)) {
         return res.status(400).json({
-            message : "room id required",
-            success : false,
-        })
+          message: "room id required",
+          success: false,
+        });
       }
       // handle unique message Ids only
       const msgIds = new Set(data.messageIds);
       const mIds = [...msgIds];
-      await prisma.$transaction(async (tx) => {
-        await tx.messages.updateMany({
-          where: {
-            id: { in: mIds },
-            senderId: req.user.id,
-            roomId,
-          },
-          data: {
-            isDeleted: true,
-          },
-        });
+
+      await prisma.messages.updateMany({
+        where: {
+          id: { in: mIds },
+          senderId: req.user.id,
+          roomId,
+        },
+        data: {
+          isDeleted: true,
+        },
       });
+      await cache.delByPrefix(`cache:roomMessages:${roomId}`);
     } catch (error) {
       console.log("error", error);
       return res.status(500).json({
@@ -62,7 +62,7 @@ const Messages = {
         });
       }
       const body = req.body;
-      const { messageId } = req.params;
+      const { messageId , roomId } = req.params;
       const { success, data } = editMessageSchema.safeParse(body);
       if (!success) {
         return res.status(400).json({
@@ -76,16 +76,20 @@ const Messages = {
           success: false,
         });
       }
-
+      if(!roomId || Array.isArray(roomId)){
+        return;
+      }
       const editedMsg = await prisma.messages.update({
         where: {
           id: messageId,
           senderId: req.user.id,
+          roomId,
         },
         data: {
           content: data.content,
         },
       });
+      await cache.delByPrefix(`cache:roomMessages:${roomId}`);
       return res.status(200).json({
         message: "the message has been edited",
         success: true,
@@ -98,6 +102,11 @@ const Messages = {
         success: false,
       });
     }
+  },
+
+  async getMessages(req: Request, res: Response) {
+    try {
+    } catch (error) {}
   },
 };
 

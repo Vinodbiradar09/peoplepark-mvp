@@ -112,11 +112,13 @@ model Messages {
   roomId    String
   senderId  String
   isDeleted Boolean     @default(false)
+  offset    BigInt      @default(0)  // an offset of the kafka is source of truth for order of messages
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
   room      Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
   sender    User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
 
+  @@index([roomId, offset])
   @@index([roomId, createdAt])
   @@index([senderId])
   @@map("messages")

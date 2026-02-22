@@ -23,5 +23,5 @@ roomRouter.delete(
   AuthHandler,
   Rooms.removeMembersFromRoom,
 );
-
+roomRouter.get("/:roomId/messages" , AuthHandler , Rooms.getRoomMessages);
 export { roomRouter };

@@ -6,6 +6,7 @@ type ConsumerEntry = {
   start: () => Promise<Consumer>;
 };
 
+// add the workers list and there function references 
 export const consumerRegistry: ConsumerEntry[] = [
   {
     name: "chat-messages",

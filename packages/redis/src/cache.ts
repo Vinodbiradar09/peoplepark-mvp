@@ -1,8 +1,9 @@
 import { getRedisClient } from "./client";
 
 export interface CacheOptions {
-  ttl?: number;
-  lockTTL?: number;
+  ttl?: number; // in seconds for cache expirations
+  lockTTL?: number; // in sec for lock expirations
+  maxRetries?: number; // max retry attempt for the stampede
 }
 
 export class RedisCache {
@@ -16,23 +17,29 @@ export class RedisCache {
     return `lock:${type}:${args.join(":")}`;
   }
 
-  private roomKey( type : string , args : string[]){
-    return `room:${type}:${args.join(":")}`;
+  private serialize(value: any) {
+    return JSON.stringify(value, (_, v) => {
+      typeof v === "bigint" ? v.toString() : v;
+    });
+  }
+
+  private deserialize<T>(value: string | null): T | null {
+    return value ? JSON.parse(value) : null;
   }
 
   async set(type: string, args: string[], value: any, options?: CacheOptions) {
     const key = this.cacheKey(type, args);
-    const data: any = JSON.stringify(value);
+    const data = this.serialize(value);
     if (options?.ttl) {
-      await this.redis.set(key, data, "EX", options.ttl);
+      await this.redis.set(key, data, "EX", options.ttl); // EX excpets sec
     } else {
       await this.redis.set(key, data);
     }
   }
 
-  async get(type: string, args: string[]) {
+  async get<T>(type: string, args: string[]) {
     const value = await this.redis.get(this.cacheKey(type, args));
-    return value ? JSON.parse(value) : null;
+    return this.deserialize<T>(value);
   }
 
   async del(type: string, args: string[]) {
@@ -43,52 +50,74 @@ export class RedisCache {
     type: string,
     args: string[],
     fetcher: () => Promise<T>,
-    options: CacheOptions = { ttl: 60, lockTTL: 10 },
+    options: CacheOptions = { ttl: 60, lockTTL: 5, maxRetries: 5 },
   ): Promise<T> {
-    // cache stampede problem
-    // first check if cache present or not 
-    const cached = await this.get(type, args);
-    if (cached) return cached;
-    // if not present create lock key
+    const { ttl = 60, lockTTL = 5, maxRetries = 5 } = options;
+    const key = this.cacheKey(type, args);
     const lockKey = this.lockKey(type, args);
-    // now lock 
-    const lock = await this.redis.set(
+
+    // try to read cache first
+    const cached = await this.get<T>(type, args);
+    if (cached) return cached;
+
+    // try to acquire lock
+    let acquired = await this.redis.set(
       lockKey,
       "1",
       "PX",
-      options.lockTTL ?? 5000,
+      lockTTL * 1000,
       "NX",
     );
-    if (!lock) {
-      // if you have not locked your are not owner 
-      await this.sleep(100);
-      // retry the cache
-      const retry = await this.get(type, args);
-      if (retry) return retry;
-      // if found send cache not means set   
-      return this.getOrSet(type, args, fetcher, options);
+    if (!acquired) {
+      // if lock not acquired, retry loop
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        await this.sleep(100); // wait 100ms
+        const retry = await this.get<T>(type, args);
+        if (retry) return retry;
+        acquired = await this.redis.set(
+          lockKey,
+          "1",
+          "PX",
+          lockTTL * 1000,
+          "NX",
+        );
+        if (acquired) break; // acquired lock, go to fetch
+      }
+
+      if (!acquired) {
+        // failed after max retries, fetch directly without caching
+        return fetcher();
+      }
     }
 
     try {
+      // Fetch from DB
       const data = await fetcher();
-      await this.set(type, args, data, { ttl: options.ttl });
+      await this.set(type, args, data, { ttl });
       return data;
     } catch (error) {
-      console.log("error cache stampede", error);
+      console.error("Redis cache fetch error:", error);
       throw error;
     } finally {
+      // never forget to release lock
+      // Release lock
       await this.redis.del(lockKey);
     }
   }
 
-  async join(type : string , args : string[] , socketId : string){
-    const roomKey = this.roomKey(type , args);
-    await this.redis.sadd(roomKey , socketId);
-  }
+  async delByPrefix( prefix : string){
+    const stream = this.redis.scanStream({
+      match : `${prefix}`,
+      count : 100,
+    });
 
-  async end( type : string , args : string[] , socketId : string){
-    const roomKey = this.roomKey(type , args);
-    await this.redis.srem(roomKey , socketId);
+    const keys : string[] = [];
+    for await ( const chunk of stream){
+      keys.push(...chunk);
+    }
+    if(keys.length > 0){
+      await this.redis.del(...keys);
+    }
   }
 
   sleep(ms: number) {

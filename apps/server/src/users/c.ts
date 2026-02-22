@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { cache } from "../infra";
+import { cache } from "@repo/redis";
 import { prisma } from "@repo/db";
 import { uniqueNamesGenerator, starWars, names } from "unique-names-generator";
 
@@ -33,7 +33,7 @@ const Users = {
           id: user?.id,
           name: user?.name,
           email: user?.email,
-          image: user?.image,
+          image: user?.image
         },
       });
     } catch (error) {
@@ -85,6 +85,7 @@ const Users = {
     }
   },
   
+
 };
 
 export { Users };
