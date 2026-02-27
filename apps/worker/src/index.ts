@@ -3,12 +3,14 @@ import http from "http";
 import { fatal } from "./fatal";
 import { createHttpApp } from "./http";
 import { startWorkers, shutdownWorkers } from "./go";
+import { cronJobs } from "./corn/cwr";
 
 async function bootstrap() {
   const app = createHttpApp();
   const server = http.createServer(app);
 
   await startWorkers();
+  cronJobs();
   const PORT = process.env.PORT;
   server.listen(PORT);
 

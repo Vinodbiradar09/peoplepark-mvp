@@ -55,7 +55,7 @@ export class RedisCache {
     const { ttl = 60, lockTTL = 5, maxRetries = 5 } = options;
     const key = this.cacheKey(type, args);
     const lockKey = this.lockKey(type, args);
-
+    console.log("hey i am reaching here");
     // try to read cache first
     const cached = await this.get<T>(type, args);
     if (cached) return cached;
@@ -105,17 +105,17 @@ export class RedisCache {
     }
   }
 
-  async delByPrefix( prefix : string){
+  async delByPrefix(prefix: string) {
     const stream = this.redis.scanStream({
-      match : `${prefix}`,
-      count : 100,
+      match: `${prefix}`,
+      count: 100,
     });
 
-    const keys : string[] = [];
-    for await ( const chunk of stream){
+    const keys: string[] = [];
+    for await (const chunk of stream) {
       keys.push(...chunk);
     }
-    if(keys.length > 0){
+    if (keys.length > 0) {
       await this.redis.del(...keys);
     }
   }
@@ -123,4 +123,23 @@ export class RedisCache {
   sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
+  async unlock(key: string): Promise<void> {
+    await this.redis.del(`lock:${key}`);
+  }
+
+  async lock(key: string, ttlMs: number, retries = 3, retryDelayMs = 100): Promise<boolean> {
+  for (let i = 0; i < retries; i++) {
+    const result = await this.redis.set(
+      `lock:${key}`,
+      "1",
+      "PX",
+      ttlMs,
+      "NX"
+    );
+    if (result === "OK") return true;
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+  }
+  return false;
+}
 }

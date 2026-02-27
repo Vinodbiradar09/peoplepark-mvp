@@ -1,18 +1,47 @@
 import { prisma } from "@repo/db";
 import { Request, Response } from "express";
-import { cache } from "@repo/redis";
+import { cache, pipeline, ratelimit } from "@repo/redis";
 import {
   createRoomSchema,
   degradeAdminSchema,
   deleteRoomSchema,
+  getUserCells,
+  haversineDistance,
   joinRoomSchema,
   leaveRoomSchema,
   makeAdminSchema,
+  RADIUS_KM,
   removeMembersSchema,
 } from "@repo/zod";
+import { roomEvents } from "@repo/kafka";
+import { AppError } from "../error";
+
+interface NearbyRoom {
+  id: string;
+  name: string;
+  img: string | null;
+  lat: number;
+  lng: number;
+  memberCount: number;
+  maxMembers: number;
+  createdAt: string;
+  expiresAt: string | null;
+  distance_km: number;
+}
 
 const Rooms = {
-  async getRooms(req: Request, res: Response) {
+  // getRoomsNearMe
+  // createRoom
+  // joinRoom
+  // leaveRoom
+  // deleteRoom
+  // removeRoomMembers
+  // getRoomMembers
+  // getRoomMessages
+  // makeAdmins
+  // blackListRooms
+
+  async getRoomsNearMe(req: Request, res: Response) {
     try {
       if (!req.user || !req.user.id) {
         return res.status(401).json({
@@ -20,31 +49,54 @@ const Rooms = {
           success: false,
         });
       }
-      const rooms = await cache.getOrSet(
-        "rooms",
-        ["available"],
-        async () => {
-          return prisma.room.findMany({
-            where: {
-              isDeleted: false,
-            },
-          });
-        },
-        { ttl: 300, lockTTL: 10 },
-      );
-      if (rooms.length === 0) {
-        return res.status(200).json({
-          message: "no rooms available",
-          success: true,
+      const lat = Number(req.query.lat);
+      const lng = Number(req.query.lng);
+      if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        return res.status(400).json({
+          message: "lat and lng are required",
+          success: false,
         });
       }
+      const cells = getUserCells(lat, lng);
+      const pip = pipeline.pipeline();
+      for (const cell of cells) {
+        pip.hgetall(`geo:cell:${cell}`);
+      }
+      const results = await pip.exec();
+      const room = new Map<string, NearbyRoom>();
+      for (const [err, cellData] of results ?? []) {
+        if (err || !cellData) continue;
+        for (const [roomId, rawRoom] of Object.entries(
+          cellData as Record<string, string>,
+        )) {
+          if (room.has(roomId)) continue;
+          const rm = JSON.parse(rawRoom);
+          if (rm.expiresAt && new Date(rm.expiresAt) < new Date()) continue;
+          const distance_km = haversineDistance(lat, lng, rm.lat, rm.lng);
+          if (distance_km > RADIUS_KM) continue;
+
+          room.set(roomId, {
+            ...rm,
+            distance_km: Math.round(distance_km * 1000) / 1000,
+          });
+        }
+      }
+      const rooms = Array.from(room.values()).sort(
+        (a, b) => a.distance_km - b.distance_km,
+      );
       return res.status(200).json({
         success: true,
-        message: "All rooms",
+        message: rooms.length === 0 ? "no rooms near you" : "rooms near you",
         rooms,
       });
     } catch (error) {
       console.log(error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
       return res.status(500).json({
         error: "internal server error",
         success: false,
@@ -67,14 +119,31 @@ const Rooms = {
           success: false,
         });
       }
+      const lat = Number(data.lat);
+      const lng = Number(data.lng);
+      const isUserBlacklisted = await prisma.user.findFirst({
+        where: {
+          id: req.user.id,
+          isBlacklisted: true,
+        },
+      });
+      if (isUserBlacklisted) {
+        return res.status(403).json({
+          message: "you are blacklisted",
+          success: false,
+        });
+      }
       const room = await prisma.$transaction(async (tx) => {
         const room = await tx.room.create({
           data: {
             name: data.name,
             expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+            createdBy: req.user.id,
+            memberCount: 1,
+            lat,
+            lng,
           },
         });
-
         await tx.roomMember.create({
           data: {
             userId: req.user.id,
@@ -84,9 +153,19 @@ const Rooms = {
         });
         return room;
       });
-
-      await cache.del("rooms", ["available"]);
-
+      await roomEvents("room-created", {
+        id: room.id,
+        name: room.name,
+        img: room.img,
+        lat: room.lat,
+        lng: room.lng,
+        memberCount: room.memberCount,
+        maxMembers: room.maxMembers,
+        createdAt: room.createdAt.toISOString(),
+        expiresAt: room.expiresAt?.toISOString() ?? null,
+        isDeleted: room.isDeleted,
+        isBlacklisted: room.isBlacklisted,
+      });
       return res.status(200).json({
         message: "Room created",
         success: true,
@@ -94,6 +173,12 @@ const Rooms = {
       });
     } catch (error) {
       console.log("error", error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
       return res.status(500).json({
         error: "internal server error",
         success: false,
@@ -102,91 +187,135 @@ const Rooms = {
   },
 
   async joinRoom(req: Request, res: Response) {
-    if (!req.user?.id) {
-      return res.status(401).json({
-        error: "Unauthorized User",
-        success: false,
-      });
-    }
-    const { success, data } = joinRoomSchema.safeParse(req.params);
-    if (!success) {
-      return res.status(400).json({
-        error: "roomId is required",
-        success: false,
-      });
-    }
-    const { roomId } = data;
-
     try {
-      const member = await prisma.$transaction(async (tx) => {
-        // Lock room row
-        const room = await tx.$queryRaw<{ id: string; name: string }[]>`
-        SELECT id, name
-        FROM "Room"
-        WHERE id = ${roomId}
-          AND "isDeleted" = false
-        FOR UPDATE
-      `;
-
-        if (room.length === 0) {
-          throw new Error("ROOM_NOT_FOUND");
-        }
-
-        // Count members under lock if above 50 return them
-        const membersCount = await tx.roomMember.count({
-          where: { roomId },
+      if (!req.user.id) {
+        return res.status(401).json({
+          message: "unauthorized user",
+          success: false,
         });
-
-        if (membersCount >= 50) {
-          throw new Error("room full max 50 members");
-        }
-
-        return tx.roomMember.upsert({
-          where: {
-            userId_roomId: {
-              userId: req.user.id,
-              roomId,
-            },
-          },
-          update: {},
-          create: {
-            userId: req.user.id,
-            roomId,
-            role: "MEMBER",
-          },
-          select: {
-            id: true,
-            roomId: true,
-            userId: true,
-            role: true,
-            joinedAt: true,
-            room: {
-              select: { name: true },
-            },
-            user: {
-              select: { name: true },
-            },
-          },
+      }
+      const { success, data } = joinRoomSchema.safeParse(req.params);
+      if (!success) {
+        return res.status(400).json({
+          message: "room id required",
+          success: false,
         });
+      }
+      // check user blacklisted or not
+      const isUserBlacklisted = await prisma.user.findFirst({
+        where: { id: req.user.id, isBlacklisted: true },
       });
-      await cache.del("members", [roomId]);
+      if (isUserBlacklisted) {
+        throw new AppError("you are Blacklisted", 403);
+      }
+      // check user is a member of room
+      const isMember = await prisma.roomMember.findFirst({
+        where: {
+          userId: req.user.id,
+          roomId: data.roomId,
+        },
+        select: { role: true, leftAt: true },
+      });
+      if (isMember) {
+        throw new AppError(
+          `you are already a ${isMember.role} of the room`,
+          409,
+        );
+      }
+      const { member, room } = await prisma.$transaction(async (tx) => {
+        // lock room row for preventing the race conditions for member count
+        const rows = await tx.$queryRaw<
+          {
+            id: string;
+            isBlacklisted: boolean;
+            isDeleted: boolean;
+            expiresAt: Date | null;
+            memberCount: number;
+            maxMembers: number;
+            lat: number;
+            lng: number;
+          }[]
+        >`
+            SELECT
+            id,
+            "isBlacklisted",
+            "isDeleted",
+            "expiresAt",
+            "memberCount",
+            "maxMembers",
+            lat,
+            lng
+            FROM "Room"
+            WHERE id = ${data.roomId}
+            FOR UPDATE
+          `;
+        const room = rows[0];
+        if (!room) throw new AppError("room not found", 404);
+        if (room.isBlacklisted) throw new AppError("room is blacklisted", 403);
+        if (room.isDeleted) throw new AppError("room not found", 404);
+        if (room.expiresAt && room.expiresAt < new Date()) {
+          throw new AppError("room has expired", 410);
+        }
+        if (room.memberCount >= room.maxMembers) {
+          throw new AppError("room is full", 409);
+        }
+        const [updatedRoom, member] = await Promise.all([
+          tx.room.update({
+            where: { id: data.roomId },
+            data: { memberCount: { increment: 1 } },
+            select: { memberCount: true, lat: true, lng: true },
+          }),
+
+          tx.roomMember.upsert({
+            where: {
+              userId_roomId: {
+                userId: req.user.id,
+                roomId: data.roomId,
+              },
+            },
+            update: { joinedAt: new Date() },
+            create: {
+              userId: req.user.id,
+              roomId: data.roomId,
+              role: "MEMBER",
+              joinedAt: new Date(),
+            },
+          }),
+        ]);
+        return {
+          member,
+          room: { ...room, memberCount: updatedRoom.memberCount },
+        };
+      });
+      await roomEvents("room-membercount", {
+        id: data.roomId,
+        lat: room.lat,
+        lng: room.lng,
+        memberCount: room.memberCount,
+      });
       return res.status(200).json({
+        message: "room joined",
         success: true,
-        message: `You joined ${member.room.name} as ${member.role}`,
         member,
       });
-    } catch (err) {
-      console.error("joinRoom error:", err);
+    } catch (error) {
+      console.log("error", error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
       return res.status(500).json({
+        message: "internal server error",
         success: false,
-        error: "Internal server error",
       });
     }
   },
 
   async leaveRoom(req: Request, res: Response) {
     try {
-      if (!req.user || !req.user.id) {
+      if (!req.user.id) {
         return res.status(401).json({
           message: "Unauthorized User",
           success: false,
@@ -195,136 +324,93 @@ const Rooms = {
       const { success, data } = leaveRoomSchema.safeParse(req.params);
       if (!success) {
         return res.status(400).json({
-          message: "room member id is required",
+          message: "room id required",
           success: false,
         });
       }
-      const isRoomMember = await prisma.roomMember.findUnique({
+      const isMember = await prisma.roomMember.findUnique({
         where: {
           userId_roomId: {
-            roomId: data.roomId,
             userId: req.user.id,
+            roomId: data.roomId,
           },
         },
       });
-      if (!isRoomMember) {
+      if (!isMember) {
         return res.status(404).json({
-          message: `you are not a member of this room`,
+          message: "you are not a room member",
           success: false,
         });
       }
-      await prisma.roomMember.delete({
-        where: {
-          userId_roomId: {
-            userId: req.user.id,
-            roomId: data.roomId,
-          },
-        },
-      });
-      await cache.del("members", [data.roomId]);
-      return res.status(200).json({
-        message: "you left the room successfully",
-        success: true,
-      });
-    } catch (error) {
-      console.log("error", error);
-      return res.status(500).json({
-        message: "internal server error",
-        success: false,
-      });
-    }
-  },
-
-  async makeRoomMemberToAdmin(req: Request, res: Response) {
-    try {
-      if (!req.user || !req.user.id) {
-        return res.status(401).json({
-          message: "Unauthorized User",
-          success: false,
-        });
-      }
-      const { success, data } = makeAdminSchema.safeParse(req.params);
-      if (!success) {
-        return res.status(400).json({
-          message: "room id and userId is required",
-          success: false,
-        });
-      }
-      await prisma.$transaction(async (tx) => {
-        const room = await tx.room.findFirst({
+      const room = await prisma.$transaction(async (tx) => {
+        // lock room row to prevent concurrent leave request can lead to race conditions for memberCount
+        const rows = await tx.$queryRaw<
+          {
+            id: string;
+            memberCount: number;
+            lat: number;
+            lng: number;
+            isDeleted: boolean;
+          }[]
+        >`
+        SELECT id, "memberCount", lat, lng, "isDeleted"
+        FROM "Room"
+        WHERE id = ${data.roomId}
+        FOR UPDATE
+      `;
+        const room = rows[0];
+        if (!room) throw new AppError("room not found", 404);
+        if (room.isDeleted) throw new AppError("room not found", 404);
+        if (room.memberCount <= 0)
+          throw new AppError("room has no member", 409);
+        // recheck the membership
+        const member = await tx.roomMember.findUnique({
           where: {
-            id: data.roomId,
-            isDeleted: false,
-            members: {
-              some: {
-                userId: req.user.id,
-                role: "ADMIN",
-              },
-            },
+            userId_roomId: { userId: req.user.id, roomId: data.roomId },
           },
           select: { id: true },
         });
+        if (!member) throw new AppError("you are not a room member", 404);
 
-        if (!room) {
-          throw new Error("room not found or you are not an admin");
-        }
-
-        const [targetMember, adminCount] = await Promise.all([
-          tx.roomMember.findUnique({
+        const [, updatedRoom] = await Promise.all([
+          tx.roomMember.delete({
             where: {
               userId_roomId: {
+                userId: req.user.id,
                 roomId: data.roomId,
-                userId: data.userId,
               },
-            },
-            select: {
-              role: true,
             },
           }),
 
-          tx.roomMember.count({
+          tx.room.update({
             where: {
-              roomId: data.roomId,
-              role: "ADMIN",
+              id: data.roomId,
+            },
+            data: {
+              memberCount: { decrement: 1 },
             },
           }),
         ]);
-
-        if (!targetMember) {
-          throw new Error(
-            "the user you are requesting is not present in the room",
-          );
-        }
-
-        if (targetMember.role === "ADMIN") {
-          throw new Error(
-            "the user you are requesting is already admin of the room",
-          );
-        }
-
-        if (adminCount >= 5) {
-          throw new Error("room can have 5 admins only");
-        }
-
-        await tx.roomMember.update({
-          where: {
-            userId_roomId: {
-              roomId: data.roomId,
-              userId: data.userId,
-            },
-          },
-          data: {
-            role: "ADMIN",
-          },
-        });
+        return updatedRoom;
       });
-      await cache.del("members", [data.roomId]);
+      await roomEvents("room-membercount", {
+        id: room.id,
+        lat: room.lat,
+        lng: room.lng,
+        memberCount: room.memberCount,
+      });
       return res.status(200).json({
-        message: "the requested user as upgrade to room admin",
+        message: "you left room",
         success: true,
       });
     } catch (error) {
       console.log("error", error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
       return res.status(500).json({
         message: "internal server error",
         success: false,
@@ -351,22 +437,19 @@ const Rooms = {
       }
 
       await prisma.$transaction(async (tx) => {
-        // check room exists and user should be admin
+        // check room exists and user should be creator of the room
         const room = await tx.room.findFirst({
           where: {
             id: data.roomId,
             isDeleted: false,
-            members: {
-              some: {
-                userId: req.user.id,
-                role: "ADMIN",
-              },
-            },
+            createdBy: req.user.id,
           },
         });
 
         if (!room) {
-          throw new Error("either room is not present or you are not an admin");
+          throw new Error(
+            "either room is not present or you are not a room creator",
+          );
         }
         // remove the roomId from the members
         await tx.roomMember.deleteMany({
@@ -384,16 +467,18 @@ const Rooms = {
           },
         });
       });
-      await Promise.all([
-        cache.del("rooms", ["available"]),
-        cache.del("members", [data.roomId]),
-      ]);
       return res.status(200).json({
         success: true,
         message: "room deleted successfully",
       });
     } catch (error) {
       console.log("error", error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
       return res.status(500).json({
         message: "internal server error",
         success: false,
@@ -401,88 +486,7 @@ const Rooms = {
     }
   },
 
-  async degradeAdminToMember(req: Request, res: Response) {
-    try {
-      // any admin can degrade the admin to member , no rules for the first admin and shit
-      // the remover must the admin of the same room , the degrading user should be also admin of the same room
-      if (!req.user || !req.user.id) {
-        return res.status(401).json({
-          message: "Unauthorized User",
-          success: false,
-        });
-      }
-      const { success, data } = degradeAdminSchema.safeParse(req.params);
-      if (!success) {
-        return res.status(400).json({
-          message: "userId and roomId are required",
-          success: false,
-        });
-      }
-      const updatedMember = await prisma.$transaction(async (tx) => {
-        const admins = await tx.roomMember.findMany({
-          where: {
-            roomId: data.roomId,
-            role: "ADMIN",
-            userId: { in: [req.user.id, data.userId] },
-          },
-          select: {
-            userId: true,
-          },
-        });
-
-        const adminIds = new Set(admins.map((ads) => ads.userId));
-        if (!adminIds.has(req.user.id)) {
-          throw new Error(
-            "either room is not present or you are not admin of the room",
-          );
-        }
-        if (!adminIds.has(data.userId)) {
-          throw new Error(
-            "either user you are requesting is not present in room or is not admin of the room",
-          );
-        }
-
-        return await tx.roomMember.update({
-          where: {
-            userId_roomId: {
-              userId: data.userId,
-              roomId: data.roomId,
-            },
-          },
-          data: {
-            role: "MEMBER",
-          },
-          select: {
-            id: true,
-            user: {
-              select: {
-                name: true,
-              },
-            },
-            room: {
-              select: {
-                name: true,
-              },
-            },
-          },
-        });
-      });
-      await cache.del("members", [data.roomId]);
-      res.status(200).json({
-        message: `the user ${updatedMember.user.name} has degraded to member of ${updatedMember.room.name} room`,
-        success: true,
-        updatedMember,
-      });
-    } catch (error) {
-      console.log("error", error);
-      return res.status(500).json({
-        message: "internal server error",
-        success: false,
-      });
-    }
-  },
-
-  async removeMembersFromRoom(req: Request, res: Response) {
+  async removeRoomMembers(req: Request, res: Response) {
     try {
       if (!req.user || !req.user.id) {
         return res.status(401).json({
@@ -525,20 +529,97 @@ const Rooms = {
           where: {
             roomId,
             userId: { in: memIds },
+            role: "MEMBER",
           },
         });
       });
-      await cache.del("members", [roomId]);
       return res.status(200).json({
         message: `${members.count} has been removed from room`,
         success: true,
       });
     } catch (error) {
       console.log("error", error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
       return res.status(500).json({
         message: "internal server error",
         success: false,
       });
+    }
+  },
+
+  async getRoomMembers(req: Request, res: Response) {
+    try {
+      if (!req.user.id) {
+        return res.status(401).json({
+          message: "Unauthorized User",
+          success: false,
+        });
+      }
+      const { roomId } = req.params;
+      if (!roomId || Array.isArray(roomId)) {
+        return res.status(400).json({
+          message: "room id required",
+          success: false,
+        });
+      }
+      // check the member existences
+      const isMember = await prisma.roomMember.findUnique({
+        where: {
+          userId_roomId: {
+            roomId,
+            userId: req.user.id,
+          },
+        },
+      });
+      if (!isMember) {
+        return res.status(404).json({
+          message: "not a room member",
+          success: false,
+        });
+      }
+      const members = await cache.getOrSet(
+        "members",
+        [roomId],
+        async () => {
+          const rows = await prisma.roomMember.findMany({
+            where: {
+              roomId,
+              room: {
+                isDeleted: false,
+              },
+            },
+            select: { id: true, role: true, user: true },
+          });
+          return rows.map((mem) => ({
+            id: mem.id,
+            name: mem.user.name,
+            img: mem.user.image,
+            userId: mem.user.id,
+            role: mem.role,
+          }));
+        },
+        { ttl: 60, lockTTL: 10, maxRetries: 5 },
+      );
+      return res.status(200).json({
+        message: "members of the room",
+        success: true,
+        members,
+      });
+    } catch (error) {
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
+      return res
+        .status(500)
+        .json({ success: false, message: "internal server error" });
     }
   },
 
@@ -638,6 +719,12 @@ const Rooms = {
       });
     } catch (error) {
       console.log("error", error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
       return res.status(500).json({
         message: "internal server error",
         success: false,
@@ -645,68 +732,175 @@ const Rooms = {
     }
   },
 
-  async getRoomMembers(req: Request, res: Response) {
+  async makeRoomAdmins(req: Request, res: Response) {
     try {
-      if (!req.user.id) {
+      if (!req.user || !req.user.id) {
         return res.status(401).json({
           message: "Unauthorized User",
           success: false,
         });
       }
-      const { roomId } = req.params;
-      if (!roomId || Array.isArray(roomId)) {
+      const { success, data } = makeAdminSchema.safeParse(req.params);
+      if (!success) {
         return res.status(400).json({
-          message: "room id required",
+          message: "room id and userId is required",
           success: false,
         });
       }
-      // check the member existences
-      const isMember = await prisma.roomMember.findUnique({
-        where: {
-          userId_roomId: {
-            roomId,
-            userId: req.user.id,
+      await prisma.$transaction(async (tx) => {
+        const room = await tx.room.findFirst({
+          where: {
+            id: data.roomId,
+            isDeleted: false,
+            createdBy: req.user.id,
           },
-        },
-      });
-      if (!isMember) {
-        return res.status(404).json({
-          message: "not a room member",
-          success: false,
+          select: { id: true },
         });
-      }
-      const members = await cache.getOrSet(
-        "members",
-        [roomId],
-        async () => {
-          const rows = await prisma.roomMember.findMany({
+
+        if (!room) {
+          throw new Error("room not found or you are not an room creator");
+        }
+
+        const [targetMember, adminCount] = await Promise.all([
+          tx.roomMember.findUnique({
             where: {
-              roomId,
-              room: {
-                isDeleted: false,
+              userId_roomId: {
+                roomId: data.roomId,
+                userId: data.userId,
               },
             },
-            select: { id: true, role: true, user: true },
-          });
-          return rows.map((mem) => ({
-            id: mem.id,
-            name: mem.user.name,
-            img: mem.user.image,
-            userId: mem.user.id,
-            role: mem.role,
-          }));
-        },
-        { ttl: 60, lockTTL: 10, maxRetries: 5 },
-      );
+            select: {
+              role: true,
+            },
+          }),
+
+          tx.roomMember.count({
+            where: {
+              roomId: data.roomId,
+              role: "ADMIN",
+            },
+          }),
+        ]);
+
+        if (!targetMember) {
+          throw new Error(
+            "the user you are requesting is not present in the room",
+          );
+        }
+
+        if (targetMember.role === "ADMIN") {
+          throw new Error(
+            "the user you are requesting is already admin of the room",
+          );
+        }
+
+        if (adminCount >= 5) {
+          throw new Error("room can have 5 admins only");
+        }
+
+        await tx.roomMember.update({
+          where: {
+            userId_roomId: {
+              roomId: data.roomId,
+              userId: data.userId,
+            },
+          },
+          data: {
+            role: "ADMIN",
+          },
+        });
+      });
       return res.status(200).json({
-        message: "members of the room",
+        message: "the requested user as upgrade to room admin",
         success: true,
-        members,
       });
     } catch (error) {
-      return res
-        .status(500)
-        .json({ success: false, message: "internal server error" });
+      console.log("error", error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
+      return res.status(500).json({
+        message: "internal server error",
+        success: false,
+      });
+    }
+  },
+
+  async degradeRoomAdmins(req: Request, res: Response) {
+    try {
+      if (!req.user.id) {
+        return res.status(401).json({
+          message: "Unauthorized user",
+          success: false,
+        });
+      }
+      const { success, data } = degradeAdminSchema.safeParse(req.params);
+      if (!success) {
+        return res.status(400).json({
+          message: "room id and user id required",
+          success: false,
+        });
+      }
+      // check the room creator is valid
+      const isRoomCreator = await prisma.room.findFirst({
+        where: {
+          id: data.roomId,
+          isBlacklisted: false,
+          isDeleted: false,
+          createdBy: req.user.id,
+        },
+      });
+      if (!isRoomCreator) {
+        return res.status(404).json({
+          message:
+            "you are not room creator or either room is delete or blacklisted",
+          success: false,
+        });
+      }
+      const isAdminPresent = await prisma.roomMember.findFirst({
+        where: {
+          userId: data.userId,
+          roomId: data.roomId,
+          role: "ADMIN",
+        },
+      });
+      if (!isAdminPresent) {
+        return res.status(404).json({
+          message:
+            "the user admin you are requesting is not present in room or he is not an admin",
+          success: false,
+        });
+      }
+      await prisma.roomMember.update({
+        where: {
+          userId_roomId: {
+            userId: data.userId,
+            roomId: data.roomId,
+          },
+        },
+        data: {
+          role: "MEMBER",
+        },
+      });
+      return res.status(200).json({
+        message: "success",
+        success: true,
+      });
+    } catch (error) {
+      console.log("error", error);
+      if (error instanceof AppError) {
+        return res.status(error.status).json({
+          message: error.message,
+          success: false,
+        });
+      }
+      return res.status(500).json({
+        message: "internal server error",
+        success: false,
+      });
     }
   },
 };

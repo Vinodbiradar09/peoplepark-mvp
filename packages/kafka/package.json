@@ -2,9 +2,10 @@
   "name": "@repo/kafka",
   "version": "0.0.0",
   "dependencies": {
+    "@repo/db": "*",
     "kafkajs": "^2.2.4"
   },
-   "exports": {
+  "exports": {
     ".": "./src/index.ts"
   }
 }

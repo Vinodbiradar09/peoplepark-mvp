@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { cache } from "@repo/redis";
 import { deleteMessagesSchema, editMessageSchema } from "@repo/zod";
 import { prisma } from "@repo/db";
-
+import { deleteBatchMessages } from "@repo/kafka";
 const Messages = {
   async deleteMessages(req: Request, res: Response) {
     try {
@@ -43,6 +43,8 @@ const Messages = {
           isDeleted: true,
         },
       });
+      // in scale we can move this part to kafka
+      // deleteBatchMessages([{ mIds: mIds, senderId: req.user.id, roomId }]);
       await cache.delByPrefix(`cache:roomMessages:${roomId}`);
     } catch (error) {
       console.log("error", error);
@@ -62,7 +64,7 @@ const Messages = {
         });
       }
       const body = req.body;
-      const { messageId , roomId } = req.params;
+      const { messageId, roomId } = req.params;
       const { success, data } = editMessageSchema.safeParse(body);
       if (!success) {
         return res.status(400).json({
@@ -76,7 +78,7 @@ const Messages = {
           success: false,
         });
       }
-      if(!roomId || Array.isArray(roomId)){
+      if (!roomId || Array.isArray(roomId)) {
         return;
       }
       const editedMsg = await prisma.messages.update({
@@ -102,11 +104,6 @@ const Messages = {
         success: false,
       });
     }
-  },
-
-  async getMessages(req: Request, res: Response) {
-    try {
-    } catch (error) {}
   },
 };
 

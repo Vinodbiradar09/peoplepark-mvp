@@ -2,9 +2,13 @@
   "name": "@repo/zod",
   "version": "0.0.0",
   "dependencies": {
+    "ngeohash": "^0.6.3",
     "zod": "^4.3.6"
   },
-   "exports": {
+  "exports": {
     ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "@types/ngeohash": "^0.6.8"
   }
 }

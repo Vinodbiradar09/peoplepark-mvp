@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -13,19 +7,26 @@ datasource db {
 }
 
 model User {
-  id            String       @id
-  name          String
-  email         String
-  emailVerified Boolean
-  image         String?
-  createdAt     DateTime
-  updatedAt     DateTime
-  sessions      Session[]
-  accounts      Account[]
-  memberships   RoomMember[]
-  messages      Messages[]
+  id               String          @id
+  name             String
+  email            String
+  emailVerified    Boolean
+  image            String?
+  isBlacklisted    Boolean         @default(false)
+  suspendedUntil   DateTime?
+  createdAt        DateTime
+  updatedAt        DateTime
+  sessions         Session[]
+  accounts         Account[]
+  memberships      RoomMember[]
+  messages         Messages[]
+  reportsByMe      BlacklistUser[] @relation("UserReportsBy")
+  reportsAgainstMe BlacklistUser[] @relation("UserReportsAgainst")
+  roomReports      BlacklistRoom[] @relation("RoomReportsBy")
+  createdRooms     Room[]          @relation("UserCreatedRooms")
 
   @@unique([email])
+  @@index([isBlacklisted])
   @@map("user")
 }
 
@@ -75,29 +76,41 @@ model Verification {
 }
 
 model Room {
-  id        String       @id @default(uuid())
-  name      String
-  img       String?
-  members   RoomMember[]
-  messages  Messages[]
-  isDeleted Boolean      @default(false)
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
-  expiresAt DateTime?
+  id            String          @id @default(uuid())
+  name          String
+  img           String?
+  lat           Float
+  lng           Float
+  isBlacklisted Boolean         @default(false)
+  isDeleted     Boolean         @default(false)
+  maxMembers    Int             @default(50)
+  memberCount   Int             @default(0)
+  createdBy     String
+  creator       User            @relation("UserCreatedRooms", fields: [createdBy], references: [id])
+  members       RoomMember[]
+  messages      Messages[]
+  reports       BlacklistRoom[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  expiresAt     DateTime?
 
   @@index([isDeleted])
-  @@index([createdAt])
   @@index([expiresAt])
+  @@index([isBlacklisted])
+  @@index([createdBy])
+  @@index([lat, lng])
 }
 
 model RoomMember {
-  id       String   @id @default(uuid())
-  userId   String
-  roomId   String
-  role     RoomRole @default(MEMBER)
-  joinedAt DateTime @default(now())
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  room     Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  id         String    @id @default(uuid())
+  userId     String
+  roomId     String
+  role       RoomRole  @default(MEMBER)
+  joinedAt   DateTime  @default(now())
+  leftAt     DateTime?
+  lastSeenAt DateTime?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room       Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
   @@unique([userId, roomId])
   @@index([roomId])
@@ -106,22 +119,49 @@ model RoomMember {
 }
 
 model Messages {
-  id        String      @id @default(uuid())
-  content   String
-  type      MessageType @default(TEXT)
-  roomId    String
-  senderId  String
-  isDeleted Boolean     @default(false)
-  offset    BigInt      @default(0)  // an offset of the kafka is source of truth for order of messages
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
-  room      Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  sender    User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  id            String       @id @default(uuid())
+  content       String // Text or cloudinary url   
+  type          MessageType?
+  roomId        String
+  senderId      String
+  isDeleted     Boolean      @default(false)
+  offset        BigInt       @default(0) // an offset of the kafka is source of truth for order of messages
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  roomDeletedAt DateTime?
+  room          Room         @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender        User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
 
   @@index([roomId, offset])
   @@index([roomId, createdAt])
   @@index([senderId])
   @@map("messages")
+}
+
+model BlacklistUser {
+  id             String   @id @default(uuid())
+  reportedUserId String
+  reportedById   String
+  reason         String?
+  createdAt      DateTime @default(now())
+  reportedUser   User     @relation("UserReportsAgainst", fields: [reportedUserId], references: [id])
+  reportedBy     User     @relation("UserReportsBy", fields: [reportedById], references: [id])
+
+  @@unique([reportedUserId, reportedById]) // one user can report only once
+  @@index([reportedUserId])
+}
+
+model BlacklistRoom {
+  id           String   @id @default(uuid())
+  roomId       String
+  reportedById String
+  reason       String?
+  createdAt    DateTime @default(now())
+  room         Room     @relation(fields: [roomId], references: [id])
+  reportedBy   User     @relation("RoomReportsBy", fields: [reportedById], references: [id])
+
+  @@unique([roomId, reportedById]) // one user can report only once
+  @@index([roomId])
 }
 
 enum RoomRole {
@@ -132,5 +172,6 @@ enum RoomRole {
 enum MessageType {
   TEXT
   IMAGE
-  SYSTEM
+  VIDEO
+  AUDIO
 }

@@ -14,12 +14,13 @@
   "dependencies": {
     "@repo/auth": "*",
     "@repo/db": "*",
+    "@repo/kafka": "*",
     "@repo/redis": "*",
     "@repo/zod": "*",
-    "@repo/kafka" : "*",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "ngeohash": "^0.6.3",
     "node-cron": "^4.2.1",
     "unique-names-generator": "^4.7.1",
     "uuid": "^13.0.0",
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/ngeohash": "^0.6.8",
     "@types/node": "^25.2.3",
     "@types/node-cron": "^3.0.11",
     "@types/ws": "^8.18.1",

@@ -5,6 +5,7 @@ import { Users } from "./c";
 const userRouter = Router();
 
 userRouter.get("/", AuthHandler, Users.getUser);
-userRouter.patch("/name" , AuthHandler , Users.assignUniqueName);
+userRouter.patch("/name", AuthHandler, Users.assignUniqueName);
+userRouter.post("/:userId/report", AuthHandler, Users.reportUser);
 
 export { userRouter };

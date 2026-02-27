@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "description": "",
   "main": "index.js",
-   "scripts": {
+  "scripts": {
     "build": "npx esbuild ./src/index.ts --bundle --platform=node --outfile=dist/index.js",
     "start": "node dist/index.js",
     "dev": "npm run build && npm run start"
@@ -11,14 +11,17 @@
   "dependencies": {
     "@repo/db": "*",
     "@repo/kafka": "*",
-    "@repo/redis" : "*",
+    "@repo/redis": "*",
+    "@repo/zod": "*",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "ngeohash": "^0.6.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/dotenv": "^6.1.1",
-    "@types/express": "^5.0.6"
+    "@types/express": "^5.0.6",
+    "@types/ngeohash": "^0.6.8"
   }
 }

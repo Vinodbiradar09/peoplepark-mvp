@@ -13,6 +13,26 @@ const requiredTopics: Topics[] = [
     numPartitions: 6,
     replicationFactor: 1,
   },
+  {
+    topic: "room-created",
+    numPartitions: 6,
+    replicationFactor: 1,
+  },
+  {
+    topic: "room-updated",
+    numPartitions: 6,
+    replicationFactor: 1,
+  },
+  {
+    topic: "room-deleted",
+    numPartitions: 6,
+    replicationFactor: 1,
+  },
+  {
+    topic: "room-membercount",
+    numPartitions: 6,
+    replicationFactor: 1,
+  },
 ];
 
 export async function Admin() {
@@ -20,7 +40,7 @@ export async function Admin() {
 
   try {
     const existingTopics = await admin.listTopics();
-    console.log("existing " , existingTopics);
+    console.log("existing ", existingTopics);
     const topics = requiredTopics.filter(
       (t) => !existingTopics.includes(t.topic),
     );
@@ -42,5 +62,3 @@ export async function Admin() {
     await admin.disconnect();
   }
 }
-
-
